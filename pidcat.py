@@ -243,6 +243,13 @@ while ps_pid.poll() is None:
     if proc in catchall_package:
       seen_pids = True
       pids.add(pid)
+      linebuf  = '\n'
+      linebuf += colorize(' ' * (header_size - 1), bg=WHITE)
+      linebuf += indent_wrap(' Process %s found\n' % (proc))
+      linebuf += colorize(' ' * (header_size - 1), bg=WHITE)
+      linebuf += ' PID: %s' % (pid)
+      linebuf += '\n'
+      print(linebuf)
 
 while adb.poll() is None:
   try:
