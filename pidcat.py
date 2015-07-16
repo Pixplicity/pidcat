@@ -27,28 +27,48 @@ import re
 import subprocess
 from subprocess import PIPE
 
+__version__ = '2.0.0'
+
 LOG_LEVELS = 'VDIWEF'
 LOG_LEVELS_MAP = dict([(LOG_LEVELS[i], i) for i in range(len(LOG_LEVELS))])
 parser = argparse.ArgumentParser(description='Filter logcat by package name')
 parser.add_argument('package', nargs='*', help='Application package name(s)')
-parser.add_argument('-w', '--tag-width', metavar='N', dest='tag_width', type=int, default=22, help='Width of log tag')
+parser.add_argument('-w', '--tag-width', metavar='N', dest='tag_width', type=int, default=23, help='Width of log tag')
 parser.add_argument('-l', '--min-level', dest='min_level', type=str, choices=LOG_LEVELS+LOG_LEVELS.lower(), default='V', help='Minimum level to be displayed')
 parser.add_argument('--color-gc', dest='color_gc', action='store_true', help='Color garbage collection')
 parser.add_argument('--always-display-tags', dest='always_tags', action='store_true',help='Always display the tag name')
+parser.add_argument('--current', dest='current_app', action='store_true',help='Filter logcat by current running app')
 parser.add_argument('-s', '--serial', dest='device_serial', help='Device serial number (adb -s option)')
-parser.add_argument('-d', '--device', dest='use_device', action='store_true', help='Use first device for log input (adb -d option).')
-parser.add_argument('-e', '--emulator', dest='use_emulator', action='store_true', help='Use first emulator for log input (adb -e option).')
-parser.add_argument('-c', '--clear', dest='clear_logcat', action='store_true', help='Clear the entire log before running.')
+parser.add_argument('-d', '--device', dest='use_device', action='store_true', help='Use first device for log input (adb -d option)')
+parser.add_argument('-e', '--emulator', dest='use_emulator', action='store_true', help='Use first emulator for log input (adb -e option)')
+parser.add_argument('-c', '--clear', dest='clear_logcat', action='store_true', help='Clear the entire log before running')
 parser.add_argument('-t', '--tag', dest='tag', action='append', help='Filter output by specified tag(s)')
 parser.add_argument('-i', '--ignore-tag', dest='ignored_tag', action='append', help='Filter output by ignoring specified tag(s)')
+parser.add_argument('-v', '--version', action='version', version='%(prog)s ' + __version__, help='Print the version number and exit')
 
 args = parser.parse_args()
 min_level = LOG_LEVELS_MAP[args.min_level.upper()]
 
+package = args.package
+
+base_adb_command = ['adb']
+if args.device_serial:
+  base_adb_command.extend(['-s', args.device_serial])
+if args.use_device:
+  base_adb_command.append('-d')
+if args.use_emulator:
+  base_adb_command.append('-e')
+
+if args.current_app:
+  system_dump_command = base_adb_command + ["shell", "dumpsys", "activity", "activities"]
+  system_dump = subprocess.Popen(system_dump_command, stdout=PIPE, stderr=PIPE).communicate()[0]
+  running_package_name = re.search(".*TaskRecord.*A[= ]([^ ^}]*)", system_dump).group(1)
+  package.append(running_package_name)
+
 # Store the names of packages for which to match all processes.
-catchall_package = filter(lambda package: package.find(":") == -1, args.package)
+catchall_package = filter(lambda package: package.find(":") == -1, package)
 # Store the name of processes to match exactly.
-named_processes = filter(lambda package: package.find(":") != -1, args.package)
+named_processes = filter(lambda package: package.find(":") != -1, package)
 # Convert default process names from <package>: (cli notation) to <package> (android notation) in the exact names match group.
 named_processes = map(lambda package: package if package.find(":") != len(package) - 1 else package[:-1], named_processes)
 
@@ -142,6 +162,7 @@ TAGTYPES = {
 
 PID_LINE = re.compile(r'^\w+\s+(\w+)\s+\w+\s+\w+\s+\w+\s+\w+\s+\w+\s+\w\s([\w|\.]+)$')
 PID_START = re.compile(r'^.*: Start proc ([a-zA-Z0-9._:]+) for ([a-z]+ [^:]+): pid=(\d+) uid=(\d+) gids=(.*)$')
+PID_START_5_1 = re.compile(r'^.*: Start proc (\d+):([a-zA-Z0-9._:]+)/[a-z0-9]+ for (.*)$')
 PID_START_DALVIK = re.compile(r'^E/dalvikvm\(\s*(\d+)\): >>>>> ([a-zA-Z0-9._:]+) \[ userId:0 \| appId:(\d+) \]$')
 PID_KILL  = re.compile(r'^Killing (\d+):([a-zA-Z0-9._:]+)/[^:]+: (.*)$')
 PID_LEAVE = re.compile(r'^No longer want ([a-zA-Z0-9._:]+) \(pid (\d+)\): .*$')
@@ -150,15 +171,9 @@ LOG_LINE  = re.compile(r'^([A-Z])/(.+?)\( *(\d+)\): (.*?)$')
 BUG_LINE  = re.compile(r'.*nativeGetEnabledTags.*')
 BACKTRACE_LINE = re.compile(r'^#(.*?)pc\s(.*?)$')
 
-base_adb_command = ['adb']
-if args.device_serial:
-  base_adb_command.extend(['-s', args.device_serial])
-if args.use_device:
-  base_adb_command.append('-d')
-if args.use_emulator:
-  base_adb_command.append('-e')
 adb_command = base_adb_command[:]
 adb_command.append('logcat')
+adb_command.extend(['-v', 'brief'])
 
 # Clear log before starting logcat
 if args.clear_logcat:
@@ -185,7 +200,7 @@ last_tag = None
 app_pid = None
 
 def match_packages(token):
-  if len(args.package) == 0:
+  if len(package) == 0:
     return True
   if token in named_processes:
     return True
@@ -216,6 +231,10 @@ def parse_death(tag, message):
   return None, None
 
 def parse_start_proc(line):
+  start = PID_START_5_1.match(line)
+  if start is not None:
+    line_pid, line_package, target = start.groups()
+    return line_package, target, line_pid, '', ''
   start = PID_START.match(line)
   if start is not None:
     line_package, target, line_pid, line_uid, line_gids = start.groups()
@@ -225,6 +244,9 @@ def parse_start_proc(line):
     line_pid, line_package, line_uid = start.groups()
     return line_package, '', line_pid, line_uid, ''
   return None
+
+def tag_in_tags_regex(tag, tags):  
+  return any(re.match(r'^' + t + r'$', tag) for t in map(str.strip, tags))
 
 ps_command = base_adb_command + ['shell', 'ps']
 ps_pid = subprocess.Popen(ps_command, stdin=PIPE, stdout=PIPE, stderr=PIPE)
@@ -268,6 +290,7 @@ while adb.poll() is None:
     continue
 
   level, tag, owner, message = log_line.groups()
+  tag = tag.strip()
   start = parse_start_proc(line)
   if start:
     line_package, target, line_pid, line_uid, line_gids = start
@@ -296,7 +319,7 @@ while adb.poll() is None:
     last_tag = None # Ensure next log gets a tag printed
 
   # Make sure the backtrace is printed after a native crash
-  if tag.strip() == 'DEBUG':
+  if tag == 'DEBUG':
     bt_line = BACKTRACE_LINE.match(message.lstrip())
     if bt_line is not None:
       message = message.lstrip()
@@ -306,15 +329,14 @@ while adb.poll() is None:
     continue
   if level in LOG_LEVELS_MAP and LOG_LEVELS_MAP[level] < min_level:
     continue
-  if args.ignored_tag and tag.strip() in args.ignored_tag:
+  if args.ignored_tag and tag_in_tags_regex(tag, args.ignored_tag):
     continue
-  if args.tag and tag.strip() not in args.tag:
+  if args.tag and not tag_in_tags_regex(tag, args.tag):
     continue
 
   linebuf = ''
 
   # right-align tag title and allocate color if needed
-  tag = tag.strip()
   if tag != last_tag or args.always_tags:
     last_tag = tag
     color = allocate_color(tag)
